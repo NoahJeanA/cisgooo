@@ -1,0 +1,97 @@
+// ==UserScript==
+
+// @name         invisible-select
+
+// @namespace    https://netacad.com/
+
+// @version      1.0
+
+// @match        *://*.netacad.com/*
+
+// @match        *://*.skillsforall.com/*
+
+// @grant        none
+
+// ==/UserScript==
+
+
+
+(function() {
+
+  'use strict';
+
+
+
+  function injectSelectionStyle(shadowRoot) {
+
+    if (!shadowRoot || shadowRoot.querySelector('style.__selectionFix')) return;
+
+
+
+    const style = document.createElement('style');
+
+    style.className = '__selectionFix';
+
+    style.textContent = `
+
+      ::selection {
+
+        background: rgba(0,0,0,0.1); /* ganz leicht grau */
+
+        color: white;
+
+
+
+      }
+
+    `;
+
+    shadowRoot.appendChild(style);
+
+  }
+
+
+
+  const observer = new MutationObserver((mutations) => {
+
+    for (const mutation of mutations) {
+
+      for (const node of mutation.addedNodes) {
+
+        if (!(node instanceof HTMLElement)) continue;
+
+
+
+        if (node.shadowRoot) {
+
+          injectSelectionStyle(node.shadowRoot);
+
+        }
+
+
+
+        node.querySelectorAll('*').forEach(el => {
+
+          if (el.shadowRoot) injectSelectionStyle(el.shadowRoot);
+
+        });
+
+      }
+
+    }
+
+  });
+
+
+
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+
+
+  document.querySelectorAll('*').forEach(el => {
+
+    if (el.shadowRoot) injectSelectionStyle(el.shadowRoot);
+
+  });
+
+})();
