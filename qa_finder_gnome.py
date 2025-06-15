@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# qa_finder.py - Robuster Frage-Antwort-System mit Error Handling
+# qa_finder_gnome.py - GNOME-optimiertes Q&A System mit Wayland/Xorg Support
 
 import json
 import subprocess
@@ -8,11 +8,12 @@ import socket
 import threading
 import sys
 import logging
+import os
 from difflib import get_close_matches
 from datetime import datetime
 from pathlib import Path
 
-class RobustQAFinder:
+class GnomeQAFinder:
     def __init__(self):
         self.host = 'localhost'
         self.port = 12345
@@ -23,11 +24,74 @@ class RobustQAFinder:
         self.error_count = 0
         self.max_errors = 10
         
+        # Desktop-Umgebung erkennen
+        self.desktop_env = self.detect_desktop_environment()
+        self.session_type = self.detect_session_type()
+        
         # Setup Logging
         self.setup_logging()
         
         # Threading Events
         self.shutdown_event = threading.Event()
+        
+        # Clipboard-Tool basierend auf Umgebung wählen
+        self.clipboard_tool = self.get_optimal_clipboard_tool()
+        
+    def detect_desktop_environment(self):
+        """Erkennt die Desktop-Umgebung"""
+        desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
+        session = os.environ.get('DESKTOP_SESSION', '').lower()
+        
+        if 'gnome' in desktop or 'gnome' in session:
+            return 'gnome'
+        elif 'kde' in desktop or 'plasma' in session:
+            return 'kde'
+        elif 'xfce' in desktop:
+            return 'xfce'
+        else:
+            return 'unknown'
+    
+    def detect_session_type(self):
+        """Erkennt ob Wayland oder X11/Xorg verwendet wird"""
+        session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
+        x_display = os.environ.get('DISPLAY', '')
+        
+        if session_type == 'wayland' or wayland_display:
+            return 'wayland'
+        elif session_type == 'x11' or x_display:
+            return 'xorg'
+        else:
+            return 'unknown'
+    
+    def get_optimal_clipboard_tool(self):
+        """Wählt das beste Clipboard-Tool basierend auf der Umgebung"""
+        tools_to_try = []
+        
+        if self.session_type == 'wayland':
+            if self.desktop_env == 'gnome':
+                # GNOME auf Wayland: wl-clipboard bevorzugt
+                tools_to_try = ['wl-copy', 'wl-paste', 'xclip']
+            else:
+                tools_to_try = ['wl-paste', 'xclip']
+        else:
+            # Xorg: xclip bevorzugt
+            tools_to_try = ['xclip', 'xsel', 'wl-paste']
+        
+        # Verfügbare Tools testen
+        for tool in tools_to_try:
+            try:
+                result = subprocess.run(['which', tool], 
+                                      capture_output=True, 
+                                      timeout=2)
+                if result.returncode == 0:
+                    self.logger.info(f"✅ Clipboard-Tool gewählt: {tool}")
+                    return tool
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+        
+        self.logger.warning("⚠️  Kein Clipboard-Tool gefunden")
+        return None
         
     def setup_logging(self):
         """Setup für strukturiertes Logging"""
@@ -36,10 +100,11 @@ class RobustQAFinder:
             format='%(asctime)s [%(levelname)s] %(message)s',
             handlers=[
                 logging.StreamHandler(),
-                logging.FileHandler('qa_finder.log')
+                logging.FileHandler('qa_finder_gnome.log')
             ]
         )
         self.logger = logging.getLogger(__name__)
+        self.logger.info(f"Desktop: {self.desktop_env}, Session: {self.session_type}")
         
     def lade_fragen_sicher(self, dateipfad):
         """Lädt Fragen mit robustem Error Handling"""
@@ -105,7 +170,6 @@ class RobustQAFinder:
             if 'answer' in eintrag and isinstance(eintrag['answer'], str) and len(eintrag['answer'].strip()) > 0:
                 has_answer = True
             elif 'answers' in eintrag and isinstance(eintrag['answers'], list) and len(eintrag['answers']) > 0:
-                # Prüfe ob alle Antworten Strings sind
                 if all(isinstance(ans, str) and len(ans.strip()) > 0 for ans in eintrag['answers']):
                     has_answer = True
                     
@@ -119,35 +183,90 @@ class RobustQAFinder:
             self.logger.warning(f"Fehler bei Validierung von Eintrag {index}: {e}")
             return False
 
+    def get_clipboard_xclip(self):
+        """Clipboard mit xclip (Xorg)"""
+        try:
+            result = subprocess.run(
+                ['xclip', '-selection', 'clipboard', '-o'], 
+                capture_output=True, 
+                text=True, 
+                timeout=2,
+                check=False
+            )
+            
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                return ""
+                
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            self.logger.warning(f"xclip Fehler: {e}")
+            return ""
+
+    def get_clipboard_wl_paste(self):
+        """Clipboard mit wl-paste (Wayland)"""
+        try:
+            result = subprocess.run(
+                ['wl-paste'], 
+                capture_output=True, 
+                text=True, 
+                timeout=2,
+                check=False
+            )
+            
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                return ""
+                
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            self.logger.warning(f"wl-paste Fehler: {e}")
+            return ""
+
+    def get_clipboard_xsel(self):
+        """Clipboard mit xsel (Alternative zu xclip)"""
+        try:
+            result = subprocess.run(
+                ['xsel', '--clipboard', '--output'], 
+                capture_output=True, 
+                text=True, 
+                timeout=2,
+                check=False
+            )
+            
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                return ""
+                
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            self.logger.warning(f"xsel Fehler: {e}")
+            return ""
+
     def get_clipboard_robust(self):
-        """Robuste Clipboard-Abfrage mit Error Handling"""
+        """Robuste Clipboard-Abfrage mit verschiedenen Tools"""
+        if not self.clipboard_tool:
+            return ""
+        
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                result = subprocess.run(
-                    ['xclip', '-selection', 'clipboard', '-o'], 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=2,
-                    check=False
-                )
-                
-                if result.returncode == 0:
-                    return result.stdout.strip()
+                if self.clipboard_tool == 'xclip':
+                    content = self.get_clipboard_xclip()
+                elif self.clipboard_tool == 'wl-paste':
+                    content = self.get_clipboard_wl_paste()
+                elif self.clipboard_tool == 'xsel':
+                    content = self.get_clipboard_xsel()
                 else:
-                    self.logger.warning(f"xclip returned code {result.returncode}")
-                    
-            except subprocess.TimeoutExpired:
-                self.logger.warning(f"Clipboard timeout (Versuch {attempt + 1})")
-            except FileNotFoundError:
-                self.logger.error("xclip nicht installiert")
-                return None
+                    return ""
+                
+                return content
+                
             except Exception as e:
                 self.logger.warning(f"Clipboard Fehler (Versuch {attempt + 1}): {e}")
-                
-            if attempt < max_retries - 1:
-                time.sleep(0.5)
-                
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    
         return ""
 
     def normalisiere_text(self, text):
@@ -272,10 +391,9 @@ class RobustQAFinder:
                 
             time.sleep(0.1)
             
-            # Sende Frage
+            # Sende Frage (optional für bessere UX)
             frage_kurz = frage[:80] + "..." if len(frage) > 80 else frage
-            if not self.sende_nachricht_robust(f"QUESTION:{frage_kurz}"):
-                return False
+            self.sende_nachricht_robust(f"QUESTION:{frage_kurz}")
             
             # Sende Antworten
             antwort_count = 0
@@ -300,12 +418,18 @@ class RobustQAFinder:
             return False
 
     def monitor_clipboard_robust(self):
-        """Robuste Clipboard-Überwachung mit Error Handling"""
+        """Robuste Clipboard-Überwachung mit GNOME-Optimierungen"""
         if not self.lade_fragen_sicher('answare.json'):
             self.logger.error("Kann nicht starten - Fehler beim Laden der Fragen")
             return
+        
+        if not self.clipboard_tool:
+            self.logger.error("Kein funktionierendes Clipboard-Tool gefunden")
+            return
             
-        self.logger.info("📋 Clipboard-Monitoring gestartet")
+        self.logger.info("📋 GNOME Clipboard-Monitoring gestartet")
+        self.logger.info(f"🖥️  Desktop: {self.desktop_env}, Session: {self.session_type}")
+        self.logger.info(f"📌 Clipboard-Tool: {self.clipboard_tool}")
         self.logger.info("🎯 Antworten werden an Overlay gesendet")
         self.logger.info("⚠️  Drücke Strg+C zum Beenden")
         
@@ -331,8 +455,7 @@ class RobustQAFinder:
                 # Clipboard abfragen
                 aktueller_inhalt = self.get_clipboard_robust()
                 if aktueller_inhalt is None:
-                    # xclip nicht verfügbar
-                    self.logger.error("xclip nicht verfügbar - beende")
+                    self.logger.error("Clipboard nicht verfügbar - beende")
                     break
                 
                 # Neue Frage verarbeiten
@@ -355,14 +478,14 @@ class RobustQAFinder:
                     else:
                         # Keine Antwort gefunden
                         if self.sende_nachricht_robust("CLEAR"):
-                            self.sende_nachricht_robust("QUESTION:Neue Frage")
-                            self.sende_nachricht_robust("ANSWER:❌ Keine Antwort gefunden")
+                            self.sende_nachricht_robust("ANSWER:❌")
                         self.logger.info("⚠️ Keine passende Antwort gefunden")
                     
                     self.letzter_inhalt = aktueller_inhalt
                 
-                # Kurze Pause
-                if self.shutdown_event.wait(0.2):
+                # Adaptive Pause basierend auf Desktop-Umgebung
+                pause_time = 0.15 if self.desktop_env == 'gnome' else 0.2
+                if self.shutdown_event.wait(pause_time):
                     break
                     
             except KeyboardInterrupt:
@@ -374,11 +497,11 @@ class RobustQAFinder:
                 if self.shutdown_event.wait(1):
                     break
                     
-        self.logger.info("📋 Clipboard-Monitoring beendet")
+        self.logger.info("📋 GNOME Clipboard-Monitoring beendet")
 
     def graceful_shutdown(self):
         """Graceful Shutdown"""
-        self.logger.info("🛑 Initiiere Shutdown...")
+        self.logger.info("🛑 Initiiere GNOME Shutdown...")
         self.running = False
         self.shutdown_event.set()
 
@@ -390,7 +513,7 @@ if __name__ == "__main__":
     # Signal Handler registrieren
     import signal
     
-    finder = RobustQAFinder()
+    finder = GnomeQAFinder()
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
