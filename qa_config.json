@@ -1,0 +1,25 @@
+{
+  "overlay": {
+    "position": "right-top",
+    "width": 600,
+    "height": 200,
+    "transparency": 98,
+    "auto_hide_delay": 2,
+    "animation_enabled": false
+  },
+  "text": {
+    "font_family": "Arial",
+    "font_size": 12,
+    "font_bold": true,
+    "text_color": "#FFFFFF",
+    "outline_color": "#000000",
+    "outline_width": 3,
+    "line_spacing": 15
+  },
+  "colors": {
+    "background_color": "#2B2B2B",
+    "question_prefix": "🔍",
+    "answer_prefix": "➤",
+    "error_prefix": "❌"
+  }
+}

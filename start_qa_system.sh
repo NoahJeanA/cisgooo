@@ -1,5 +1,5 @@
 #!/bin/bash
-# start_qa_system.sh - Robustes Start-Skript für Q&A System
+# start_qa_system.sh - Robustes Start-Skript für Q&A System mit Config GUI
 # Führt Tests durch und sorgt für Stabilität
 
 set -euo pipefail  # Strict error handling
@@ -15,6 +15,7 @@ LOG_FILE="${LOG_DIR}/qa_system_$(date +%Y%m%d_%H%M%S).log"
 # PID-Dateien für Prozessüberwachung
 OVERLAY_PID_FILE="${SCRIPT_DIR}/qa_overlay.pid"
 FINDER_PID_FILE="${SCRIPT_DIR}/qa_finder.pid"
+CONFIG_GUI_PID_FILE="${SCRIPT_DIR}/qa_config_gui.pid"
 
 # Restart-Konfiguration
 MAX_RESTARTS=5
@@ -26,7 +27,54 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
+
+# Optionen
+LAUNCH_CONFIG_GUI=false
+CONFIG_ONLY=false
+
+# =============================================================================
+# ARGUMENT PARSING
+# =============================================================================
+
+show_help() {
+    echo -e "${BLUE}Q&A System Starter v1.1${NC}"
+    echo ""
+    echo "Verwendung: $0 [OPTIONEN]"
+    echo ""
+    echo "Optionen:"
+    echo "  -c, --config     Startet die Konfigurations-GUI"
+    echo "  -C, --config-only Startet NUR die Konfigurations-GUI"
+    echo "  -h, --help       Zeigt diese Hilfe"
+    echo ""
+    echo "Beispiele:"
+    echo "  $0              # Startet das Q&A System"
+    echo "  $0 -c           # Startet System + Config GUI"
+    echo "  $0 -C           # Startet nur Config GUI"
+}
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -c|--config)
+            LAUNCH_CONFIG_GUI=true
+            shift
+            ;;
+        -C|--config-only)
+            CONFIG_ONLY=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Unbekannte Option: $1${NC}"
+            show_help
+            exit 1
+            ;;
+    esac
+done
 
 # =============================================================================
 # LOGGING FUNKTIONEN
@@ -58,12 +106,26 @@ log_success() {
     log "${GREEN}[SUCCESS]${NC} $*"
 }
 
+log_config() {
+    log "${PURPLE}[CONFIG]${NC} $*"
+}
+
 # =============================================================================
 # CLEANUP UND SIGNAL HANDLING
 # =============================================================================
 
 cleanup() {
     log_info "🧹 Cleanup wird durchgeführt..."
+    
+    # Stoppe Config GUI falls vorhanden
+    if [[ -f "${CONFIG_GUI_PID_FILE}" ]]; then
+        local gui_pid=$(cat "${CONFIG_GUI_PID_FILE}" 2>/dev/null || echo "")
+        if [[ -n "${gui_pid}" ]] && kill -0 "${gui_pid}" 2>/dev/null; then
+            log_info "Stoppe Config GUI (PID: ${gui_pid})"
+            kill -TERM "${gui_pid}" 2>/dev/null || true
+        fi
+        rm -f "${CONFIG_GUI_PID_FILE}"
+    fi
     
     # Stoppe alle Hintergrundprozesse
     if [[ -f "${OVERLAY_PID_FILE}" ]]; then
@@ -91,6 +153,7 @@ cleanup() {
     # Alle Python-Prozesse des Q&A Systems beenden
     pkill -f "qa_overlay.py" 2>/dev/null || true
     pkill -f "qa_finder.py" 2>/dev/null || true
+    pkill -f "qa_config_gui.py" 2>/dev/null || true
     
     log_success "✅ Cleanup abgeschlossen"
 }
@@ -98,6 +161,70 @@ cleanup() {
 # Signal Handler
 trap cleanup EXIT
 trap 'log_warn "⚠️  Signal empfangen - beende graceful..."; exit 0' INT TERM
+
+# =============================================================================
+# KONFIGURATION
+# =============================================================================
+
+check_and_create_config() {
+    log_config "🔧 Prüfe Konfigurationsdatei..."
+    
+    if [[ ! -f "${SCRIPT_DIR}/qa_config.json" ]]; then
+        log_config "📝 Erstelle Standard-Konfiguration..."
+        
+        cat > "${SCRIPT_DIR}/qa_config.json" << 'EOF'
+{
+  "overlay": {
+    "position": "right-middle",
+    "width": 600,
+    "height": 200,
+    "transparency": 95,
+    "auto_hide_delay": 30,
+    "animation_enabled": true
+  },
+  "text": {
+    "font_family": "Arial",
+    "font_size": 12,
+    "font_bold": true,
+    "text_color": "#FFFFFF",
+    "outline_color": "#000000",
+    "outline_width": 3,
+    "line_spacing": 15
+  },
+  "colors": {
+    "background_color": "#2B2B2B",
+    "question_prefix": "🔍",
+    "answer_prefix": "➤",
+    "error_prefix": "❌"
+  }
+}
+EOF
+        log_success "✅ Standard-Konfiguration erstellt"
+    else
+        log_success "✅ Konfigurationsdatei vorhanden"
+    fi
+}
+
+start_config_gui() {
+    log_config "🎨 Starte Konfigurations-GUI..."
+    
+    cd "${SCRIPT_DIR}"
+    python3 qa_config_gui.py &
+    local pid=$!
+    echo ${pid} > "${CONFIG_GUI_PID_FILE}"
+    
+    # Warte auf Startup
+    sleep 2
+    
+    if kill -0 ${pid} 2>/dev/null; then
+        log_success "✅ Config GUI gestartet (PID: ${pid})"
+        return 0
+    else
+        log_error "❌ Config GUI konnte nicht gestartet werden"
+        rm -f "${CONFIG_GUI_PID_FILE}"
+        return 1
+    fi
+}
 
 # =============================================================================
 # SYSTEM TESTS
@@ -160,10 +287,14 @@ check_file_integrity() {
     local all_good=true
     
     # Python-Skripte prüfen
-    for script in "qa_overlay.py" "qa_finder.py"; do
+    for script in "qa_overlay.py" "qa_finder.py" "qa_config_gui.py"; do
         if [[ ! -f "${SCRIPT_DIR}/${script}" ]]; then
-            log_error "❌ ${script} nicht gefunden"
-            all_good=false
+            if [[ "${script}" == "qa_config_gui.py" ]]; then
+                log_warn "⚠️  ${script} nicht gefunden (optional)"
+            else
+                log_error "❌ ${script} nicht gefunden"
+                all_good=false
+            fi
         elif [[ ! -r "${SCRIPT_DIR}/${script}" ]]; then
             log_error "❌ ${script} nicht lesbar"
             all_good=false
@@ -237,7 +368,10 @@ run_all_tests() {
     
     check_system_requirements || ((test_results++))
     check_file_integrity || ((test_results++))
-    test_network_connectivity || ((test_results++))
+    
+    if [[ "${CONFIG_ONLY}" == "false" ]]; then
+        test_network_connectivity || ((test_results++))
+    fi
     
     if [[ ${test_results} -eq 0 ]]; then
         log_success "✅ Alle Tests bestanden"
@@ -401,17 +535,34 @@ monitor_processes() {
 # =============================================================================
 
 main() {
-    log_info "🚀 Q&A System Starter v1.0"
+    log_info "🚀 Q&A System Starter v1.1"
     log_info "📍 Arbeitsverzeichnis: ${SCRIPT_DIR}"
     log_info "📝 Log-Datei: ${LOG_FILE}"
     
     # Cleanup alte PID-Dateien
-    rm -f "${OVERLAY_PID_FILE}" "${FINDER_PID_FILE}"
+    rm -f "${OVERLAY_PID_FILE}" "${FINDER_PID_FILE}" "${CONFIG_GUI_PID_FILE}"
+    
+    # Konfiguration prüfen/erstellen
+    check_and_create_config
     
     # System-Tests durchführen
     if ! run_all_tests; then
         log_error "❌ System-Tests fehlgeschlagen - Abbruch"
         exit 1
+    fi
+    
+    # Nur Config GUI starten?
+    if [[ "${CONFIG_ONLY}" == "true" ]]; then
+        log_config "🎨 Starte nur Konfigurations-GUI..."
+        if start_config_gui; then
+            log_success "🎉 Konfigurations-GUI gestartet!"
+            log_info "🛑 Zum Beenden: Fenster schließen oder Strg+C"
+            wait
+        else
+            log_error "❌ Config GUI Start fehlgeschlagen"
+            exit 1
+        fi
+        exit 0
     fi
     
     # Prozesse starten
@@ -425,9 +576,19 @@ main() {
         exit 1
     fi
     
+    # Optional: Config GUI starten
+    if [[ "${LAUNCH_CONFIG_GUI}" == "true" ]]; then
+        log_config "🎨 Starte zusätzlich Konfigurations-GUI..."
+        start_config_gui || log_warn "⚠️  Config GUI konnte nicht gestartet werden"
+    fi
+    
     log_success "🎉 Q&A System erfolgreich gestartet!"
     log_info "📋 Das System überwacht jetzt die Zwischenablage"
     log_info "🛑 Zum Beenden: Strg+C drücken"
+    
+    if [[ "${LAUNCH_CONFIG_GUI}" == "false" ]]; then
+        log_info "💡 Tipp: Starte mit -c für Konfigurations-GUI"
+    fi
     
     # Monitoring starten
     monitor_processes
@@ -451,6 +612,7 @@ if pgrep -f "qa_overlay.py" > /dev/null || pgrep -f "qa_finder.py" > /dev/null; 
     log_info "🧹 Beende bestehende Prozesse..."
     pkill -f "qa_overlay.py" 2>/dev/null || true
     pkill -f "qa_finder.py" 2>/dev/null || true
+    pkill -f "qa_config_gui.py" 2>/dev/null || true
     sleep 2
 fi
 
